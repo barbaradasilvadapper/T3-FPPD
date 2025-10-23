@@ -23,6 +23,7 @@ import (
 	PP2PLink "SD/PP2PLink"
 	"fmt"
 	"strings"
+	"strconv"
 )
 
 // ------------------------------------------------------------------------------------
@@ -142,6 +143,22 @@ func (module *DIMEX_Module) handleUponReqEntry() {
 		       		manda msg [ pl , Send | q, [ reqEntry, id, reqTs ]
 		   		st := wantMX
 	*/
+	// incrementa relógio local
+	module.lcl++
+	module.reqTs = module.lcl
+	module.nbrResps = 0
+
+	// envia reqEntry para todos os outros processos
+	for i, addr := range module.processes {
+		if i == module.id {
+			continue
+		}
+		content := fmt.Sprintf("reqEntry|%d|%d", module.id, module.reqTs)
+		module.sendToLink(addr, content, "REQ-ENTRY")
+	}
+
+	// altera estado para WANT
+	module.st = wantMX
 }
 
 func (module *DIMEX_Module) handleUponReqExit() {
@@ -152,6 +169,19 @@ func (module *DIMEX_Module) handleUponReqExit() {
 		   			waiting := {}
 					st := noMX
 	*/
+	// para todos que estão esperando, envia respOK
+	for i, waiting := range module.waiting {
+		if waiting {
+			// envia respOK para o processo i
+			addr := module.processes[i]
+			module.sendToLink(addr, "respOK", "RESP-OK")
+			// limpa a flag
+			module.waiting[i] = false
+		}
+	}
+
+	// estado para noMX
+	module.st = noMX
 }
 
 // ------------------------------------------------------------------------------------
@@ -168,6 +198,22 @@ func (module *DIMEX_Module) handleUponDeliverRespOk(msgOutro PP2PLink.PP2PLink_I
 		    		then gera evento [ dmx, Deliver | resp ]
 		             	 st := inMX
 	*/
+	// incrementa contador de respostas
+	module.nbrResps++
+
+	module.outDbg(fmt.Sprintf("handleUponDeliverRespOk: nbrResps = %d (need %d)", module.nbrResps, len(module.processes)-1))
+
+	// se recebeu respostas de todos os outros processos, libera para aplicação
+	if module.nbrResps == len(module.processes)-1 {
+		module.outDbg("handleUponDeliverRespOk: todas respostas recebidas -> entregando dmxResp para aplicação")
+
+		// envia o evento para a aplicação em uma goroutine para evitar qualquer bloqueio inadvertido
+		go func() {
+			module.Ind <- dmxResp{}
+		}()
+
+		module.st = inMX
+	}
 }
 
 func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink_Ind_Message) {
@@ -182,6 +228,56 @@ func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink
 		        		// then   waiting := waiting + [ q ]     else  // empty
 		     	   lcl := max(lcl, rts)
 	*/
+	// parse da mensagem: espera "reqEntry|<rid>|<rts>"
+	parts := strings.Split(msgOutro.Message, "|")
+	if len(parts) < 3 {
+		module.outDbg("handleUponDeliverReqEntry: mensagem com formato inesperado: " + msgOutro.Message)
+		return
+	}
+
+	// parts[0] == "reqEntry"
+	ridStr := parts[1]
+	rtsStr := parts[2]
+
+	rid := 0
+	rts := 0
+	if v, err := strconv.Atoi(ridStr); err == nil {
+		rid = v
+	} else {
+		module.outDbg("handleUponDeliverReqEntry: erro convert rid: " + err.Error())
+		return
+	}
+	if v, err := strconv.Atoi(rtsStr); err == nil {
+		rts = v
+	} else {
+		module.outDbg("handleUponDeliverReqEntry: erro convert rts: " + err.Error())
+		return
+	}
+
+	// atualiza relógio local para max(lcl, rts)
+	if rts > module.lcl {
+		module.lcl = rts
+	}
+
+	// condição: se estou no noMX OU (estou em wantMX E minha requisição é after da outra)
+	// Note: after([reqTs,id],[rts,rid]) <=> before([rts,rid],[reqTs,id])
+	otherBeforeMe := before(rid, rts, module.id, module.reqTs)
+	if module.st == noMX || (module.st == wantMX && otherBeforeMe) {
+		// envia respOK para quem pediu
+		if rid >= 0 && rid < len(module.processes) {
+			addr := module.processes[rid]
+			module.sendToLink(addr, "respOK", "RESP-OK")
+		} else {
+			module.outDbg(fmt.Sprintf("handleUponDeliverReqEntry: rid fora do range: %d", rid))
+		}
+	} else {
+		// senão adiciona à fila de waiting
+		if rid >= 0 && rid < len(module.waiting) {
+			module.waiting[rid] = true
+		} else {
+			module.outDbg(fmt.Sprintf("handleUponDeliverReqEntry: rid fora do range ao marcar waiting: %d", rid))
+		}
+	}
 }
 
 // ------------------------------------------------------------------------------------
