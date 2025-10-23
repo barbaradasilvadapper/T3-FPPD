@@ -28,6 +28,7 @@ func main() {
 		fmt.Println("go run useDIMEX.go 0 127.0.0.1:5000  127.0.0.1:6001  127.0.0.1:7002 ")
 		fmt.Println("go run useDIMEX.go 1 127.0.0.1:5000  127.0.0.1:6001  127.0.0.1:7002 ")
 		fmt.Println("go run useDIMEX.go 2 127.0.0.1:5000  127.0.0.1:6001  127.0.0.1:7002 ")
+
 		return
 	}
 
@@ -38,7 +39,8 @@ func main() {
 	var dmx *DIMEX.DIMEX_Module = DIMEX.NewDIMEX(addresses, id, true)
 	fmt.Println(dmx)
 
-	time.Sleep(5 * time.Second)
+	//MUDANÇA: aumentamos para 6 para conseguir rodar os 3 terminais antes dele tentar se conectar
+	time.Sleep(6 * time.Second)
 
 	for {
 		fmt.Println("[ APP id: ", id, " PEDE   MX ]")
