@@ -1,9 +1,9 @@
 // Construido como parte da disciplina: Sistemas Distribuidos - PUCRS - Escola Politecnica
 //  Professor: Fernando Dotti  (https://fldotti.github.io/)
 // Uso p exemplo:
-//   go run usaDIMEX-f.go 0 127.0.0.1:5000  127.0.0.1:6001  127.0.0.1:7002
-//   go run usaDIMEX-f.go 1 127.0.0.1:5000  127.0.0.1:6001  127.0.0.1:7002
-//   go run usaDIMEX-f.go 2 127.0.0.1:5000  127.0.0.1:6001  127.0.0.1:7002
+//   go run useDIMEX-f.go 0 127.0.0.1:5000  127.0.0.1:6001  127.0.0.1:7002
+//   go run useDIMEX-f.go 1 127.0.0.1:5000  127.0.0.1:6001  127.0.0.1:7002
+//   go run useDIMEX-f.go 2 127.0.0.1:5000  127.0.0.1:6001  127.0.0.1:7002
 // ----------
 // LANCAR N PROCESSOS EM SHELL's DIFERENTES, UMA PARA CADA PROCESSO.
 // para cada processo fornecer: seu id único (0, 1, 2 ...) e a mesma lista de processos.
@@ -48,7 +48,8 @@ func main() {
 
 	id, _ := strconv.Atoi(os.Args[1])
 	addresses := os.Args[2:]
-	// fmt.Print("id: ", id, "   ") fmt.Println(addresses)
+	fmt.Print("id: ", id, "   ") 
+	fmt.Println(addresses)
 
 	var dmx *DIMEX.DIMEX_Module = DIMEX.NewDIMEX(addresses, id, true)
 	fmt.Println(dmx)
@@ -62,15 +63,17 @@ func main() {
 	defer file.Close() // Ensure the file is closed at the end of the function
 
 	// espera para facilitar inicializacao de todos processos (a mao)
-	time.Sleep(3 * time.Second)
+	//MUDANÇA: aumentamos de 3 para 6 para conseguir rodar os 3 terminais antes dele tentar se conectar
+	time.Sleep(6 * time.Second)
 
 	for {
 		// SOLICITA ACESSO AO DIMEX
 		fmt.Println("[ APP id: ", id, " PEDE   MX ]")
 		dmx.Req <- DIMEX.ENTER
-		//fmt.Println("[ APP id: ", id, " ESPERA MX ]")
+		fmt.Println("[ APP id: ", id, " ESPERA MX ]")
 		// ESPERA LIBERACAO DO MODULO DIMEX
 		<-dmx.Ind //
+		fmt.Println("[ APP id: ", id, "] RECEBEU dmxResp - entrando na SC")
 
 		// A PARTIR DAQUI ESTA ACESSANDO O ARQUIVO SOZINHO
 		_, err = file.WriteString("|") // marca entrada no arquivo
