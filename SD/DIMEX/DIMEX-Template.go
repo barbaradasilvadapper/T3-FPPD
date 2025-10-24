@@ -17,6 +17,9 @@
 				handleUponDeliverReqEntry(msgOutro) // recebe do nivel de baixo
 */
 
+//EXPLICAÇÃO: variação clássica do algoritmo de Ricart-Agrawala, que usa mensagens de requisição e resposta (reqEntry e respOK) 
+//para garantir que apenas um processo por vez entre na seção crítica (SC).
+
 package DIMEX
 
 import (
@@ -30,23 +33,27 @@ import (
 // ------- principais tipos
 // ------------------------------------------------------------------------------------
 
-type State int // enumeracao dos estados possiveis de um processo
+type State int // enumeracao dos estados possiveis de um processo (cada processo pode estar em um dos três estados)
 const (
-	noMX State = iota
-	wantMX
-	inMX
+	noMX State = iota // não quer usar o recurso compartilhado
+	wantMX            // quer entrar na seção crítica (SC)
+	inMX              // está dentro da seção crítica
 )
 
-type dmxReq int // enumeracao dos estados possiveis de um processo
+type dmxReq int // enumeracao dos estados possiveis de um processo (a aplicação interage com o DIMEX por dois eventos)
 const (
-	ENTER dmxReq = iota
-	EXIT
+	ENTER dmxReq = iota // pede para entrar na SC
+	EXIT                 // avisa que saiu da SC
 )
 
 type dmxResp struct { // mensagem do módulo DIMEX infrmando que pode acessar - pode ser somente um sinal (vazio)
 	// mensagem para aplicacao indicando que pode prosseguir
 }
 
+// Resumo: 
+// Cada processo sabe quem são todos os outros (processes)
+// Mantém um relógio lógico para ordenação de eventos (lcl, reqTs)
+// E tem canais de comunicação com a aplicação e com os outros processos.
 type DIMEX_Module struct {
 	Req       chan dmxReq  // canal para receber pedidos da aplicacao (REQ e EXIT)
 	Ind       chan dmxResp // canal para informar aplicacao que pode acessar
@@ -56,16 +63,17 @@ type DIMEX_Module struct {
 	waiting   []bool       // processos aguardando tem flag true
 	lcl       int          // relogio logico local
 	reqTs     int          // timestamp local da ultima requisicao deste processo
-	nbrResps  int
-	dbg       bool
+	nbrResps  int		   // numero de respostas recebidas para a requisicao atual
+	dbg       bool		   // modo debug
 
-	Pp2plink *PP2PLink.PP2PLink // acesso aa comunicacao enviar por PP2PLinq.Req  e receber por PP2PLinq.Ind
+	Pp2plink *PP2PLink.PP2PLink // acesso aa comunicacao enviar por PP2PLinq.Req  e receber por PP2PLinq.Ind (comunicação ponto a ponto)
 }
 
 // ------------------------------------------------------------------------------------
 // ------- inicializacao
 // ------------------------------------------------------------------------------------
 
+//inicializa um novo DIMEX e depois inicializa a goroutine principal Start()
 func NewDIMEX(_addresses []string, _id int, _dbg bool) *DIMEX_Module {
 
 	p2p := PP2PLink.NewPP2PLink(_addresses[_id], _dbg)
@@ -96,6 +104,11 @@ func NewDIMEX(_addresses []string, _id int, _dbg bool) *DIMEX_Module {
 // ------- nucleo do funcionamento
 // ------------------------------------------------------------------------------------
 
+//loop principal
+//Essa é a “máquina de eventos” do processo — reage a:
+// - Mensagens da aplicação (Entry/Exit)
+// - Mensagens da rede (reqEntry/respOK)
+// Cada evento é tratado de forma atômica, o que garante consistência.
 func (module *DIMEX_Module) Start() {
 
 	go func() {
@@ -133,6 +146,7 @@ func (module *DIMEX_Module) Start() {
 // ------- UPON EXIT
 // ------------------------------------------------------------------------------------
 
+//pedido de entrada na SC (entry request)
 func (module *DIMEX_Module) handleUponReqEntry() {
 	/*
 		    quando aplicação aplicação solicita[ dmx, Entry ]  faça
@@ -143,9 +157,11 @@ func (module *DIMEX_Module) handleUponReqEntry() {
 		       		manda msg [ pl , Send | q, [ reqEntry, id, reqTs ]
 		   		st := wantMX
 	*/
-	// incrementa relógio local
+	// incrementa relógio lógico
 	module.lcl++
+	// guarda o timestamp da requisição.
 	module.reqTs = module.lcl
+	// zera contador de respostas
 	module.nbrResps = 0
 
 	// envia reqEntry para todos os outros processos
@@ -157,10 +173,11 @@ func (module *DIMEX_Module) handleUponReqEntry() {
 		module.sendToLink(addr, content, "REQ-ENTRY")
 	}
 
-	// altera estado para WANT
+	// troca o estado para WANT
 	module.st = wantMX
 }
 
+// pedido de saída da SC (exit request)
 func (module *DIMEX_Module) handleUponReqExit() {
 	/*
 				quando aplicação avisa [ dmx, Exit   ]  faça
@@ -175,12 +192,12 @@ func (module *DIMEX_Module) handleUponReqExit() {
 			// envia respOK para o processo i
 			addr := module.processes[i]
 			module.sendToLink(addr, "respOK", "RESP-OK")
-			// limpa a flag
+			// limpa a flag (limpa o vetor de waiting) 
 			module.waiting[i] = false
 		}
 	}
 
-	// estado para noMX
+	// troca o estado para noMX
 	module.st = noMX
 }
 
@@ -190,6 +207,7 @@ func (module *DIMEX_Module) handleUponReqExit() {
 // ------- UPON reqEntry
 // ------------------------------------------------------------------------------------
 
+// receber resposta de outro processo (respOK)
 func (module *DIMEX_Module) handleUponDeliverRespOk(msgOutro PP2PLink.PP2PLink_Ind_Message) {
 	/*
 				quando pl entregar msg  [ pl, Deliver | q, [ respOk ] ]
@@ -207,15 +225,18 @@ func (module *DIMEX_Module) handleUponDeliverRespOk(msgOutro PP2PLink.PP2PLink_I
 	if module.nbrResps == len(module.processes)-1 {
 		module.outDbg("handleUponDeliverRespOk: todas respostas recebidas -> entregando dmxResp para aplicação")
 
-		// envia o evento para a aplicação em uma goroutine para evitar qualquer bloqueio inadvertido
+		// envia o sinal de liberação (dmxResp) para a aplicação permitindo a entrada na SC
 		go func() {
 			module.Ind <- dmxResp{}
 		}()
 
+		// troca o estado para inMX
 		module.st = inMX
 	}
 }
 
+// receber pedido de outro processo (reqEntry)
+// oração do algoritmo, a comparação de timestamps garante uma ordem global de requisições sem precisar de um coordenador central.
 func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink_Ind_Message) {
 	// outro processo quer entrar na SC
 	/*
@@ -229,6 +250,7 @@ func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink
 		     	   lcl := max(lcl, rts)
 	*/
 	// parse da mensagem: espera "reqEntry|<rid>|<rts>"
+	// extrai id e timestamp do remetente
 	parts := strings.Split(msgOutro.Message, "|")
 	if len(parts) < 3 {
 		module.outDbg("handleUponDeliverReqEntry: mensagem com formato inesperado: " + msgOutro.Message)
@@ -261,6 +283,12 @@ func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink
 
 	// condição: se estou no noMX OU (estou em wantMX E minha requisição é after da outra)
 	// Note: after([reqTs,id],[rts,rid]) <=> before([rts,rid],[reqTs,id])
+
+	// Decide:
+	// - Se não quer o recurso (noMX), responde imediatamente com respOK.
+	// - Se também quer o recurso (wantMX), compara timestamps:
+		// - Se o outro pediu antes (otherBeforeMe == true), responde respOK.
+		// - Senão, adiciona o outro na lista de espera (waiting).
 	otherBeforeMe := before(rid, rts, module.id, module.reqTs)
 	if module.st == noMX || (module.st == wantMX && otherBeforeMe) {
 		// envia respOK para quem pediu
@@ -284,6 +312,7 @@ func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink
 // ------- funcoes de ajuda
 // ------------------------------------------------------------------------------------
 
+// envia mensagem para outro processo via PP2PLink
 func (module *DIMEX_Module) sendToLink(address string, content string, space string) {
 	module.outDbg(space + " ---->>>>   to: " + address + "     msg: " + content)
 	module.Pp2plink.Req <- PP2PLink.PP2PLink_Req_Message{
@@ -291,6 +320,9 @@ func (module *DIMEX_Module) sendToLink(address string, content string, space str
 		Message: content}
 }
 
+// Define a ordem total entre requisições:
+// primeiro compara timestamps.
+// Se empatar, usa o ID como desempate.
 func before(oneId, oneTs, othId, othTs int) bool {
 	if oneTs < othTs {
 		return true
@@ -301,6 +333,7 @@ func before(oneId, oneTs, othId, othTs int) bool {
 	}
 }
 
+// debug output
 func (module *DIMEX_Module) outDbg(s string) {
 	if module.dbg {
 		fmt.Println(". . . . . . . . . . . . [ DIMEX : " + s + " ]")
